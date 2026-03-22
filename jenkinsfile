@@ -2,54 +2,63 @@ pipeline {
     agent any
 
     stages {
-        stage('Build') {
+
+        stage('Git Checkout') {
             steps {
-                sh 'mvn clean package -DskipTests'
+                git branch: 'main', credentialsId: 'GitCreds', url: 'https://github.com/borrajohn2000/hotstar.git'
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Process') {
             steps {
-                sh 'docker build -t myapp:v1 .'
+                sh 'mvn clean install'
             }
         }
 
-        stage('Run Container (Local Test)') {
+        stage('Docker Build') {
             steps {
-                script {
-                    // Stop & remove old container if exists
-                    sh 'docker rm -f myapp-cont || true'
-                    
-                
-                    sh 'docker run -d --name myapp-cont -p 8082:8080 myapp:v1'
-                }
+                sh '''
+                docker build -t borrajohn2000/hotstar:${BUILD_NUMBER} .
+                docker tag borrajohn2000/hotstar:${BUILD_NUMBER} borrajohn2000/hotstar:latest
+                '''
             }
         }
 
-        stage('Check Container Logs') {
+        stage('Docker Push') {
             steps {
-                sh 'docker ps -a | grep myapp-cont'
-                sh 'docker logs myapp-cont || true'
-            }
-        }
-
-        stage('Deploy to Docker Swarm') {
-            steps {
-                script {
-                    // Create/Update Swarm service
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockercred',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
                     sh '''
-                    docker service rm myapp-service || true
-
-                    docker service create \
-                        --name myapp-service \
-                        --publish 8082:8080 \
-                        --replicas 5 \
-                        myapp:v1
+                    echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                    docker push borrajohn2000/hotstar:${BUILD_NUMBER}
+                    docker push borrajohn2000/hotstar:latest
+                    docker logout
                     '''
                 }
             }
         }
+
+        stage('Test K8s Connection') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh 'kubectl get nodes'
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                    kubectl apply -f k8s/Deployment.yml
+                    kubectl apply -f k8s/Service.yml
+                    '''
+                }
+            }
+        }
+
     }
 }
-
-
